@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RootNamespace>DesktopClone</RootNamespace>
+    <AssemblyName>DesktopClone</AssemblyName>
+    <AssemblyTitle>桌面分身 DesktopClone</AssemblyTitle>
+    <Product>DesktopClone</Product>
+    <Description>基于 Windows 子会话与本机 RDP 的独立桌面分身工具</Description>
+    <Version>0.1.0</Version>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+</Project>

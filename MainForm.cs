@@ -1,0 +1,527 @@
+using System.Runtime.InteropServices;
+using DesktopClone.Interop;
+using DesktopClone.Services;
+
+namespace DesktopClone;
+
+/// <summary>
+/// 主界面:工具栏 + RDP 画面区 + 状态栏。
+/// </summary>
+internal sealed class MainForm : Form
+{
+    private const int MaxRecentPrograms = 5;
+
+    private readonly AppSettings _settings;
+    private readonly RdpClientHost _rdpHost = null!;
+    private readonly ChildSessionManager _manager = null!;
+    private readonly string? _hostCreationError;
+
+    private readonly ToolStrip _toolStrip = new()
+    {
+        GripStyle = ToolStripGripStyle.Hidden,
+        Padding = new Padding(6, 2, 6, 2),
+        ImageScalingSize = new Size(16, 16)
+    };
+
+    private readonly StatusStrip _statusStrip = new();
+    private readonly ToolStripStatusLabel _statusLabel = new()
+    {
+        Spring = true,
+        TextAlign = ContentAlignment.MiddleLeft
+    };
+
+    private readonly ToolStripButton _startButton = new("启动分身")
+    {
+        ToolTipText = "创建/附着分身会话并连接画面",
+        Enabled = false
+    };
+
+    private readonly ToolStripButton _disconnectButton = new("断开画面")
+    {
+        ToolTipText = "断开画面连接,分身会话保留在后台运行",
+        Enabled = false
+    };
+
+    private readonly ToolStripButton _logoffButton = new("注销分身")
+    {
+        ToolTipText = "断开连接并注销分身会话,其中所有程序都会被结束",
+        Enabled = false
+    };
+
+    private readonly ToolStripSplitButton _recentButton = new("启动程序…")
+    {
+        ToolTipText = "把 exe 以管理员权限启动到分身会话。\n"
+                      + "注意:分身内直接双击需要管理员权限的程序会失败(Windows 子会话不支持 UAC 提权),"
+                      + "这类程序请统一用本按钮启动。",
+        Enabled = false
+    };
+
+    private readonly ToolStripButton _watchButton = new("观看模式")
+    {
+        CheckOnClick = true,
+        ToolTipText = "屏蔽本机键鼠进入分身(画面照常渲染)"
+    };
+
+    private readonly ToolStripButton _muteButton = new("分身静音")
+    {
+        CheckOnClick = true,
+        ToolTipText = "关闭分身侧的音频(切换会触发自动重连)"
+    };
+
+    private readonly ToolStripButton _shortcutsButton = new("组合键→分身")
+    {
+        CheckOnClick = true,
+        ToolTipText = "Win 系组合键作用于分身而非本机(切换会触发自动重连)"
+    };
+
+    private readonly ToolStripButton _winDButton = new("Win+D")
+    {
+        ToolTipText = "向分身发送「显示桌面」",
+        Enabled = false
+    };
+
+    private readonly ToolStripButton _winTabButton = new("Win+Tab")
+    {
+        ToolTipText = "向分身发送「任务视图」",
+        Enabled = false
+    };
+
+    private readonly ToolStripButton _topmostButton = new("窗口置顶")
+    {
+        CheckOnClick = true
+    };
+
+    private readonly ToolStripButton _sizingButton = new("自适应缩放")
+    {
+        CheckOnClick = true,
+        ToolTipText = "画面缩放到窗口大小;关闭则 1:1 显示"
+    };
+
+    public MainForm()
+    {
+        _settings = AppSettings.Load();
+
+        Text = "桌面分身 DesktopClone";
+        StartPosition = FormStartPosition.Manual;
+        Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
+        MinimumSize = new Size(480, 320);
+        Font = new Font("Microsoft YaHei UI", 9f);
+
+        // RDP ActiveX 宿主:构造失败(缺控件等)时降级为提示,程序其余部分可用。
+        try
+        {
+            _rdpHost = new RdpClientHost();
+        }
+        catch (Exception exception)
+        {
+            _hostCreationError = exception.Message;
+            _rdpHost = null!;
+        }
+
+        if (_rdpHost is not null)
+        {
+            _manager = new ChildSessionManager(_rdpHost, _settings);
+            _manager.StateChanged += (_, _) => UpdateUi();
+
+            var hostPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black };
+            _rdpHost.Dock = DockStyle.Fill;
+            hostPanel.Controls.Add(_rdpHost);
+            Controls.Add(hostPanel);
+        }
+        else
+        {
+            _manager = null!;
+        }
+
+        BuildToolBar();
+        _statusStrip.Items.Add(_statusLabel);
+        Controls.Add(_toolStrip);
+        Controls.Add(_statusStrip);
+
+        Load += OnLoad;
+        FormClosing += OnFormClosingHandler;
+        FormClosed += OnFormClosedHandler;
+    }
+
+    private void BuildToolBar()
+    {
+        _startButton.Click += OnStartClicked;
+        _disconnectButton.Click += OnDisconnectClicked;
+        _logoffButton.Click += OnLogoffClicked;
+        _recentButton.ButtonClick += OnLaunchProgramClicked;
+        _recentButton.DropDownItemClicked += OnRecentItemClicked;
+        _watchButton.CheckedChanged += (_, _) => SafeManagerCall(() =>
+            _manager.SetWatchMode(_watchButton.Checked));
+        _muteButton.CheckedChanged += (_, _) => SafeManagerCall(() =>
+            _manager.SetAudioMuted(_muteButton.Checked));
+        _shortcutsButton.CheckedChanged += (_, _) => SafeManagerCall(() =>
+            _manager.SetShortcutsToRemote(_shortcutsButton.Checked));
+        _winDButton.Click += (_, _) => SafeManagerCall(() => _manager.SendWinD());
+        _winTabButton.Click += (_, _) => SafeManagerCall(() => _manager.SendWinTab());
+        _topmostButton.CheckedChanged += OnTopmostChanged;
+        _sizingButton.CheckedChanged += (_, _) => SafeManagerCall(() =>
+            _manager.SetSmartSizing(_sizingButton.Checked));
+
+        _toolStrip.Items.AddRange(
+        [
+            _startButton,
+            _disconnectButton,
+            _logoffButton,
+            new ToolStripSeparator(),
+            _recentButton,
+            new ToolStripSeparator(),
+            _watchButton,
+            _muteButton,
+            _shortcutsButton,
+            new ToolStripSeparator(),
+            _winDButton,
+            _winTabButton,
+            new ToolStripSeparator(),
+            _topmostButton,
+            _sizingButton
+        ]);
+        RebuildRecentMenu();
+    }
+
+    private void OnLoad(object? sender, EventArgs e)
+    {
+        RestoreWindowBounds();
+
+        if (_manager is null)
+        {
+            _statusLabel.Text = $"RDP ActiveX 初始化失败:{_hostCreationError}";
+            return;
+        }
+
+        _watchButton.Checked = _settings.WatchMode;
+        _muteButton.Checked = _settings.AudioMuted;
+        _shortcutsButton.Checked = _settings.ShortcutsToRemote;
+        _topmostButton.Checked = _settings.Topmost;
+        _sizingButton.Checked = _settings.SmartSizing;
+        TopMost = _settings.Topmost;
+
+        _manager.RefreshState();
+        UpdateUi();
+
+        if (_hostCreationError is null)
+        {
+            var issues = _manager.RunPrecheck();
+            if (issues.Count > 0)
+            {
+                _statusLabel.Text = "环境预检发现问题,详见启动时的提示。";
+            }
+        }
+    }
+
+    private async void OnStartClicked(object? sender, EventArgs e)
+    {
+        var issues = _manager.RunPrecheck();
+        if (issues.Count > 0)
+        {
+            var summary = EnvironmentCheck.FormatSummary(issues);
+            var choice = MessageBox.Show(
+                this,
+                $"环境预检发现问题,可能导致启动失败:\n\n{summary}\n\n仍要继续启动吗?",
+                "环境预检",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (choice != DialogResult.Yes)
+            {
+                return;
+            }
+        }
+
+        _startButton.Enabled = false;
+        try
+        {
+            var started = await _manager.StartAsync();
+            if (!started)
+            {
+                MessageBox.Show(
+                    this,
+                    _manager.LastFailureMessage ?? "桌面分身启动失败,原因未知。",
+                    "启动失败",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"启动失败:{exception.Message}",
+                "启动失败",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        finally
+        {
+            UpdateUi();
+        }
+    }
+
+    private void OnDisconnectClicked(object? sender, EventArgs e)
+    {
+        SafeManagerCall(() => _manager.Disconnect());
+        UpdateUi();
+    }
+
+    private async void OnLogoffClicked(object? sender, EventArgs e)
+    {
+        var sessionId = _manager.ChildSessionId;
+        var choice = MessageBox.Show(
+            this,
+            "注销分身会结束其中所有正在运行的程序,未保存的数据会丢失。是否继续?",
+            "注销桌面分身",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (choice != DialogResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            await _manager.LogoffAsync(sessionId);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"注销失败:{exception.Message}",
+                "注销桌面分身",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+
+        UpdateUi();
+    }
+
+    private async void OnLaunchProgramClicked(object? sender, EventArgs e)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "选择要在分身中启动的程序",
+            Filter = "程序 (*.exe)|*.exe",
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        await LaunchAndRecordAsync(dialog.FileName);
+    }
+
+    private async void OnRecentItemClicked(object? sender, ToolStripItemClickedEventArgs e)
+    {
+        if (e.ClickedItem?.Tag is not string path)
+        {
+            return;
+        }
+
+        await LaunchAndRecordAsync(path);
+    }
+
+    private async Task LaunchAndRecordAsync(string path)
+    {
+        try
+        {
+            await _manager.LaunchProgramAsync(path);
+            _settings.RecentPrograms.Remove(path);
+            _settings.RecentPrograms.Insert(0, path);
+            if (_settings.RecentPrograms.Count > MaxRecentPrograms)
+            {
+                _settings.RecentPrograms.RemoveRange(MaxRecentPrograms, _settings.RecentPrograms.Count - MaxRecentPrograms);
+            }
+
+            _settings.Save();
+            RebuildRecentMenu();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"启动失败:{exception.Message}",
+                "启动程序",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+
+        UpdateUi();
+    }
+
+    private void OnTopmostChanged(object? sender, EventArgs e)
+    {
+        TopMost = _topmostButton.Checked;
+        _settings.Topmost = _topmostButton.Checked;
+        _settings.Save();
+    }
+
+    private void RebuildRecentMenu()
+    {
+        _recentButton.DropDownItems.Clear();
+        foreach (var path in _settings.RecentPrograms)
+        {
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            _recentButton.DropDownItems.Add(path).Tag = path;
+        }
+    }
+
+    private void UpdateUi()
+    {
+        if (_manager is null)
+        {
+            return;
+        }
+
+        _statusLabel.Text = _manager.StatusText;
+        var hasSession = _manager.ChildSessionId is not null;
+        var connected = _manager.IsConnected;
+
+        _startButton.Enabled = !connected;
+        _disconnectButton.Enabled = connected;
+        _logoffButton.Enabled = hasSession;
+        _recentButton.Enabled = hasSession;
+        _winDButton.Enabled = connected;
+        _winTabButton.Enabled = connected;
+    }
+
+    private void SafeManagerCall(Action action)
+    {
+        if (_manager is null)
+        {
+            return;
+        }
+
+        try
+        {
+            action();
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+                                              or COMException)
+        {
+            MessageBox.Show(this, exception.Message, "桌面分身", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        UpdateUi();
+    }
+
+    private void RestoreWindowBounds()
+    {
+        if (_settings.WindowX == -1 && _settings.WindowY == -1)
+        {
+            StartPosition = FormStartPosition.CenterScreen;
+            return;
+        }
+
+        var bounds = new Rectangle(
+            _settings.WindowX,
+            _settings.WindowY,
+            _settings.WindowWidth,
+            _settings.WindowHeight);
+        var virtualScreen = SystemInformation.VirtualScreen;
+        if (bounds.IntersectsWith(virtualScreen))
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = bounds.Location;
+            Size = bounds.Size;
+            if (_settings.WindowMaximized)
+            {
+                WindowState = FormWindowState.Maximized;
+            }
+        }
+        else
+        {
+            StartPosition = FormStartPosition.CenterScreen;
+        }
+    }
+
+    private void SaveWindowBounds()
+    {
+        if (WindowState == FormWindowState.Normal)
+        {
+            _settings.WindowX = Location.X;
+            _settings.WindowY = Location.Y;
+            _settings.WindowWidth = Size.Width;
+            _settings.WindowHeight = Size.Height;
+        }
+
+        _settings.WindowMaximized = WindowState == FormWindowState.Maximized;
+        _settings.Save();
+    }
+
+    private void OnFormClosingHandler(object? sender, FormClosingEventArgs e)
+    {
+        if (_manager is null || e.CloseReason == CloseReason.ApplicationExitCall)
+        {
+            SaveWindowBounds();
+            return;
+        }
+
+        if (_manager.ChildSessionId is null)
+        {
+            SaveWindowBounds();
+            return;
+        }
+
+        var choice = MessageBox.Show(
+            this,
+            "分身会话仍在运行。\n\n"
+            + "「是」- 断开画面并保留分身,分身里的程序继续在后台运行\n"
+            + "「否」- 注销分身(结束其中所有程序)并退出\n"
+            + "「取消」- 返回",
+            "关闭桌面分身",
+            MessageBoxButtons.YesNoCancel,
+            MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button1);
+        if (choice == DialogResult.Cancel)
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        if (choice == DialogResult.Yes)
+        {
+            SaveWindowBounds();
+            return;
+        }
+
+        // 注销后再关闭:先取消本次关闭,注销完成后重新 Close。
+        e.Cancel = true;
+        _ = LogoffThenCloseAsync();
+    }
+
+    private async Task LogoffThenCloseAsync()
+    {
+        try
+        {
+            await _manager.LogoffAsync();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"注销失败:{exception.Message}",
+                "注销桌面分身",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return;
+        }
+
+        SaveWindowBounds();
+        Close();
+    }
+
+    private void OnFormClosedHandler(object? sender, FormClosedEventArgs e)
+    {
+        _manager?.Dispose();
+        _settings.Save();
+    }
+}

@@ -4,7 +4,7 @@
 
 与 BetterGI 的"桌面分身"同源同机制,但剥离了一切游戏相关逻辑,变成一个通用工具。
 
-## 原理(一段话)
+## 原理
 
 `wtsapi32.dll` 的 `WTSEnableChildSessions` 开启子会话能力 → Windows 自带的 RDP ActiveX(MsRdpClient10)连接 `localhost`,并通过 `IMsRdpExtendedSettings` 的 **`ConnectToChildSession`** 扩展属性把连接路由到新建的子会话(而不是顶掉当前控制台会话)→ 画面嵌入 WinForms 窗口;用一次性计划任务(`TASK_RUN_USE_SESSION` + `RunLevel Highest`)把 exe 以管理员身份启动到分身会话;`WTSLogoffSession` 注销。全程只用系统官方 API,不修改任何系统文件。
 
@@ -66,7 +66,46 @@ dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile
   1. **程序需要管理员权限** —— 子会话内 UAC 提权会失败(常报「不支持该请求」,或毫无反应)。需要管理员的程序(游戏、启动器等)请改用工具栏「**启动程序…**」,它以计划任务方式绕过 UAC;
   2. **单实例程序在主桌面已经运行**(Chrome、米哈游启动器/原神等) —— 分身内的新实例会把请求转交给主桌面那边然后立即退出,看起来像没反应。先关闭主桌面的实例再试。
   - 自检:双击记事本能打开,说明输入链路正常,就是以上两条;记事本也打不开才是输入转发问题。
-- **提示凭据无效**:确认账户有密码;若开了「仅允许 Windows Hello 登录」,关闭后注销重登
+- **启动分身时提示「你的凭据不工作」(账户未设置密码)**
+
+  - **现象**:点「启动分身」后,分身登录界面里输入用户名(如 `Administrator`)、密码留空,反复重输仍失败,弹出「你的凭据不工作 / 之前用于连接到 localhost 的凭据无法工作。请输入新凭据。/ 登录没有成功」。
+  - **原因**:分身画面走本机 RDP(`MsRdpClient10` 连接 `localhost`,再用 `ConnectToChildSession` 路由到子会话),对 Windows 而言这属于**网络登录**,不是控制台登录。Windows 默认启用安全策略「账户:使用空密码的本地账户只允许进行控制台登录」(`HKLM\SYSTEM\CurrentControlSet\Control\Lsa\LimitBlankPasswordUse = 1`),该策略下空密码账户一律**拒绝任何网络身份验证**,RDP 正是其中之一——密码留空无论怎么填都不会成功,不是输错了密码。这也是「使用前提」要求账户必须设置密码的原因。
+  - **方案一(推荐):给账户设置密码**
+    1. 打开「设置 - 帐户 - 登录选项 - 密码 - 添加」设置密码;或以管理员身份执行:
+
+       ```cmd
+       net user Administrator 你的密码
+       ```
+
+    2. 回到 DesktopClone,重新点「启动分身」,在登录界面填入用户名与刚设置的密码。
+    - **注意**:RDP 只接受**账户密码**,不接受 PIN、指纹、人脸;绑定微软账户时,用户名要填**完整邮箱地址**;修改密码后建议**注销当前会话并重新登录**,刷新凭据缓存后再启动分身。
+  - **方案二(不推荐):关闭空密码限制**——仅在确实无法设置密码时使用,且必须在**目标机器本地**操作。
+    
+    - 专业版 / 企业版:`Win+R` → `secpol.msc` → 安全设置 → 本地策略 → 安全选项 → 双击「账户:使用空密码的本地账户只允许进行控制台登录」→ 选择**已禁用** → 确定。
+  - 家庭版(没有 `secpol.msc`):以管理员身份打开命令提示符执行:
+    
+      ```cmd
+      reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f
+    ```
+    
+  - 改完无需重启,但已建立的网络连接需断开重连才生效;恢复默认限制把 `/d 0` 改为 `/d 1`:
+    
+      ```cmd
+      reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f
+    ```
+    
+    - **安全风险**:关闭该策略后,同一网络内任何知道这台主机的人都可以用空密码尝试远程桌面登录和访问共享目录。若机器处于宿舍网、办公网或公共 WiFi 环境,请勿使用此方案,应当直接设置密码。
+  - **仍然失败时的排查顺序**:
+
+    | 检查项 | 操作方法 |
+    | --- | --- |
+    | 是否只允许 Windows Hello 登录 | 「设置 - 帐户 - 登录选项」中关闭「仅允许 Windows Hello 登录」,注销后重登 |
+    | 残留的旧凭据 | `cmdkey /list` 查看,用 `cmdkey /delete:<目标>` 删除与 `localhost` 或本机名相关的条目 |
+    | 用户名格式 | 改用 `.\Administrator` 或 `计算机名\Administrator`,强制在本地账户库中验证 |
+    | 远程桌面主机未开启 | 确认 `fDenyTSConnections = 0`,并查看程序启动时的环境预检提示 |
+    | 服务与端口 | `TermService` 服务运行中,防火墙放行 3389 |
+    | 多用户工具冲突 | 与 RDP Wrapper / SuperRDP 等劫持 TermService 的工具互斥,需先停用 |
+
 - **连接失败 / 内部错误**:看启动时的环境预检提示;确认远程桌面主机已开启、TermService 服务在运行、防火墙放行 3389
 - **启动程序报「目标分身会话已变化」**:分身刚好在重连,重试一次即可
 - **与 BetterGI 桌面分身 / RDP Wrapper 冲突**:同类机制互斥,同一时间只启用一个

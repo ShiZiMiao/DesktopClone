@@ -15,6 +15,10 @@ internal sealed class AppSettings
     public int WindowWidth { get; set; } = 1280;
     public int WindowHeight { get; set; } = 752;
     public bool WindowMaximized { get; set; }
+
+    /// <summary>分身桌面分辨率;两者为 0 时使用本机主显示器的原始分辨率。</summary>
+    public int DesktopWidth { get; set; }
+    public int DesktopHeight { get; set; }
     public List<string> RecentPrograms { get; set; } = [];
 
     private static string SettingsPath =>

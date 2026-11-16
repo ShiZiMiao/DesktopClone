@@ -11,6 +11,15 @@ internal sealed class MainForm : Form
 {
     private const int MaxRecentPrograms = 5;
 
+    private static readonly Size[] PresetResolutions =
+    [
+        new(1280, 720),
+        new(1600, 900),
+        new(1920, 1080),
+        new(2560, 1440),
+        new(3840, 2160)
+    ];
+
     private readonly AppSettings _settings;
     private readonly RdpClientHost _rdpHost = null!;
     private readonly ChildSessionManager _manager = null!;
@@ -97,6 +106,11 @@ internal sealed class MainForm : Form
         ToolTipText = "画面缩放到窗口大小;关闭则 1:1 显示"
     };
 
+    private readonly ToolStripDropDownButton _resolutionButton = new("分辨率")
+    {
+        ToolTipText = "分身桌面分辨率,默认跟随本机主显示器的原始分辨率;改动会触发自动重连"
+    };
+
     public MainForm()
     {
         _settings = AppSettings.Load();
@@ -161,6 +175,7 @@ internal sealed class MainForm : Form
         _topmostButton.CheckedChanged += OnTopmostChanged;
         _sizingButton.CheckedChanged += (_, _) => SafeManagerCall(() =>
             _manager.SetSmartSizing(_sizingButton.Checked));
+        _resolutionButton.DropDownOpening += (_, _) => RebuildResolutionMenu();
 
         _toolStrip.Items.AddRange(
         [
@@ -178,9 +193,12 @@ internal sealed class MainForm : Form
             _winTabButton,
             new ToolStripSeparator(),
             _topmostButton,
-            _sizingButton
+            _sizingButton,
+            new ToolStripSeparator(),
+            _resolutionButton
         ]);
         RebuildRecentMenu();
+        RebuildResolutionMenu();
     }
 
     private void OnLoad(object? sender, EventArgs e)
@@ -371,6 +389,80 @@ internal sealed class MainForm : Form
             }
 
             _recentButton.DropDownItems.Add(path).Tag = path;
+        }
+    }
+
+    private void RebuildResolutionMenu()
+    {
+        _resolutionButton.DropDownItems.Clear();
+
+        var originalSize = ChildSessionManager.OriginalDesktopSize;
+        var hasSelectedSize = _settings.DesktopWidth > 0 && _settings.DesktopHeight > 0;
+        var selected = hasSelectedSize
+            ? new Size(_settings.DesktopWidth, _settings.DesktopHeight)
+            : (Size?)null;
+
+        _resolutionButton.ToolTipText = selected is { } current
+            ? $"分身桌面分辨率:{current.Width}×{current.Height};改动会触发自动重连"
+            : $"分身桌面分辨率:原始分辨率({originalSize.Width}×{originalSize.Height},跟随本机主显示器);"
+              + "改动会触发自动重连";
+
+        var originalItem = new ToolStripMenuItem(
+            $"原始分辨率({originalSize.Width}×{originalSize.Height})")
+        {
+            Checked = selected is null,
+            ToolTipText = "跟随本机主显示器的当前分辨率"
+        };
+        originalItem.Click += (_, _) => ApplyResolution(null);
+        _resolutionButton.DropDownItems.Add(originalItem);
+        _resolutionButton.DropDownItems.Add(new ToolStripSeparator());
+
+        foreach (var resolution in PresetResolutions)
+        {
+            var preset = resolution;
+            var presetItem = new ToolStripMenuItem($"{preset.Width}×{preset.Height}")
+            {
+                Checked = selected == preset
+            };
+            presetItem.Click += (_, _) => ApplyResolution(preset);
+            _resolutionButton.DropDownItems.Add(presetItem);
+        }
+
+        _resolutionButton.DropDownItems.Add(new ToolStripSeparator());
+        var customItem = new ToolStripMenuItem("自定义…")
+        {
+            Checked = selected is { } custom && Array.IndexOf(PresetResolutions, custom) < 0
+        };
+        customItem.Click += OnCustomResolutionClicked;
+        _resolutionButton.DropDownItems.Add(customItem);
+    }
+
+    private void ApplyResolution(Size? resolution)
+    {
+        if (_manager is not null)
+        {
+            SafeManagerCall(() => _manager.SetDesktopSize(resolution));
+        }
+        else
+        {
+            _settings.DesktopWidth = resolution?.Width ?? 0;
+            _settings.DesktopHeight = resolution?.Height ?? 0;
+        }
+
+        _settings.Save();
+        RebuildResolutionMenu();
+    }
+
+    private void OnCustomResolutionClicked(object? sender, EventArgs e)
+    {
+        var initialSize = _settings.DesktopWidth > 0 && _settings.DesktopHeight > 0
+            ? new Size(_settings.DesktopWidth, _settings.DesktopHeight)
+            : ChildSessionManager.OriginalDesktopSize;
+
+        using var dialog = new ResolutionDialog(initialSize);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            ApplyResolution(dialog.SelectedSize);
         }
     }
 

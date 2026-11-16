@@ -12,7 +12,8 @@ internal enum SettingChange
 {
     None = 0,
     Shortcuts = 1,
-    Audio = 2
+    Audio = 2,
+    Resolution = 4
 }
 
 /// <summary>
@@ -22,7 +23,7 @@ internal enum SettingChange
 /// </summary>
 internal sealed class ChildSessionManager : IDisposable
 {
-    private static readonly Size DefaultDesktopSize = new(1920, 1080);
+    private static readonly Size FallbackDesktopSize = new(1920, 1080);
     private static readonly TimeSpan ConnectionTimeout = TimeSpan.FromSeconds(60);
     private const int InitialRetryCount = 3;
     private const int SettingsReconnectRetryCount = 2;
@@ -62,6 +63,28 @@ internal sealed class ChildSessionManager : IDisposable
     public uint? ChildSessionId { get; private set; }
 
     public bool IsConnected => _rdpHost.ConnectedState == 1;
+
+    /// <summary>「原始分辨率」:本机主显示器的当前分辨率。</summary>
+    public static Size OriginalDesktopSize
+    {
+        get
+        {
+            var bounds = Screen.PrimaryScreen?.Bounds
+                         ?? new Rectangle(0, 0, FallbackDesktopSize.Width, FallbackDesktopSize.Height);
+            return new Size(bounds.Width, bounds.Height);
+        }
+    }
+
+    /// <summary>当前设置下实际使用的分身桌面分辨率。</summary>
+    private Size ResolveDesktopSize()
+    {
+        if (_settings.DesktopWidth > 0 && _settings.DesktopHeight > 0)
+        {
+            return new Size(_settings.DesktopWidth, _settings.DesktopHeight);
+        }
+
+        return OriginalDesktopSize;
+    }
 
     public bool IsFeatureEnabled { get; private set; }
 
@@ -110,7 +133,7 @@ internal sealed class ChildSessionManager : IDisposable
             {
                 _lastOperation = "正在启动桌面分身";
                 _initialRetriesRemaining = InitialRetryCount;
-                _rdpHost.ConnectToChildSession(DefaultDesktopSize);
+                _rdpHost.ConnectToChildSession(ResolveDesktopSize());
             }
             catch (Exception exception)
             {
@@ -235,6 +258,18 @@ internal sealed class ChildSessionManager : IDisposable
         _settings.SmartSizing = enabled;
         _lastOperation = enabled ? "自适应缩放已开启" : "自适应缩放已关闭(1:1 显示)";
         RefreshState();
+    }
+
+    /// <summary>设置分身桌面分辨率,null 表示跟随本机主显示器的原始分辨率。</summary>
+    /// <returns>返回 true 表示已触发自动重连,新的分辨率在重连完成后生效。</returns>
+    public bool SetDesktopSize(Size? size)
+    {
+        _settings.DesktopWidth = size?.Width ?? 0;
+        _settings.DesktopHeight = size?.Height ?? 0;
+        var effective = ResolveDesktopSize();
+        return ReconnectForSettingChange(
+            SettingChange.Resolution,
+            $"分辨率已设为 {effective.Width}×{effective.Height}");
     }
 
     /// <summary>返回 true 表示已触发自动重连,设置在重连完成后生效。</summary>
@@ -437,7 +472,7 @@ internal sealed class ChildSessionManager : IDisposable
         RefreshState();
         try
         {
-            _rdpHost.ReconnectToChildSession(DefaultDesktopSize);
+            _rdpHost.ReconnectToChildSession(ResolveDesktopSize());
         }
         catch (Exception exception)
         {
@@ -485,7 +520,7 @@ internal sealed class ChildSessionManager : IDisposable
 
         _pendingChanges |= change;
         _settingsRetriesRemaining = SettingsReconnectRetryCount;
-        _rdpHost.ReconnectToChildSession(DefaultDesktopSize);
+        _rdpHost.ReconnectToChildSession(ResolveDesktopSize());
         _lastOperation = $"{operationMessage},正在自动重连…";
         RefreshState();
         return true;

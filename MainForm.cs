@@ -25,6 +25,16 @@ internal sealed class MainForm : Form
     private readonly ChildSessionManager _manager = null!;
     private readonly string? _hostCreationError;
 
+    private readonly NotifyIcon _trayIcon;
+    private readonly ContextMenuStrip _trayMenu;
+    private readonly Icon _trayIconImage;
+    private bool _inTrayMode;
+    private bool _handlingMinimize;
+    private bool _trayHintShown;
+    private Rectangle _trayRestoreBounds;
+    private FormWindowState _trayRestoreState = FormWindowState.Normal;
+    private FormWindowState _lastNonMinimizedState = FormWindowState.Normal;
+
     private readonly ToolStrip _toolStrip = new()
     {
         GripStyle = ToolStripGripStyle.Hidden,
@@ -114,6 +124,24 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         _settings = AppSettings.Load();
+
+        _trayIconImage = (Icon)SystemIcons.Application.Clone();
+        _trayMenu = new ContextMenuStrip();
+        var showFromTrayItem = new ToolStripMenuItem("显示主窗口");
+        showFromTrayItem.Click += (_, _) => ExitTrayMode();
+        _trayMenu.Items.Add(showFromTrayItem);
+        _trayMenu.Items.Add(new ToolStripSeparator());
+        var exitFromTrayItem = new ToolStripMenuItem("退出");
+        exitFromTrayItem.Click += (_, _) => ExitFromTray();
+        _trayMenu.Items.Add(exitFromTrayItem);
+        _trayIcon = new NotifyIcon
+        {
+            Icon = _trayIconImage,
+            Text = "桌面分身 DesktopClone",
+            ContextMenuStrip = _trayMenu,
+            Visible = false
+        };
+        _trayIcon.DoubleClick += (_, _) => ExitTrayMode();
 
         Text = "桌面分身 DesktopClone";
         StartPosition = FormStartPosition.Manual;
@@ -229,6 +257,129 @@ internal sealed class MainForm : Form
                 _statusLabel.Text = "环境预检发现问题,详见启动时的提示。";
             }
         }
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        const int WmSysCommand = 0x0112;
+        const int ScMinimize = 0xF020;
+
+        // 不真正最小化宿主窗口:RDP 控件一旦被最小化,Windows 会抑制子会话的输入/显示。
+        if (m.Msg == WmSysCommand && ((int)m.WParam & 0xFFF0) == ScMinimize)
+        {
+            EnterTrayMode();
+            return;
+        }
+
+        base.WndProc(ref m);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+
+        if (WindowState != FormWindowState.Minimized)
+        {
+            _lastNonMinimizedState = WindowState;
+            return;
+        }
+
+        if (_handlingMinimize || _inTrayMode)
+        {
+            return;
+        }
+
+        // 兜底:Win+D 等路径可能绕过 WM_SYSCOMMAND,先把窗口恢复到非最小化再隐藏。
+        _handlingMinimize = true;
+        if (!IsHandleCreated || IsDisposed)
+        {
+            _handlingMinimize = false;
+            return;
+        }
+
+        try
+        {
+            BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    if (!IsDisposed && WindowState == FormWindowState.Minimized)
+                    {
+                        EnterTrayMode();
+                    }
+                }
+                finally
+                {
+                    _handlingMinimize = false;
+                }
+            }));
+        }
+        catch (InvalidOperationException)
+        {
+            _handlingMinimize = false;
+        }
+    }
+
+    private void EnterTrayMode()
+    {
+        if (_inTrayMode || IsDisposed)
+        {
+            return;
+        }
+
+        _inTrayMode = true;
+        var wasMinimized = WindowState == FormWindowState.Minimized;
+        _trayRestoreState = wasMinimized ? _lastNonMinimizedState : WindowState;
+        _trayRestoreBounds = wasMinimized || _trayRestoreState == FormWindowState.Maximized
+            ? RestoreBounds
+            : Bounds;
+
+        if (wasMinimized)
+        {
+            // 先退出最小化状态,避免 RDP 控件继续停留在 SIZE_MINIMIZED。
+            WindowState = _trayRestoreState;
+        }
+
+        SaveWindowBounds();
+        Hide();
+        _trayIcon.Visible = true;
+
+        if (!_trayHintShown)
+        {
+            _trayHintShown = true;
+            _trayIcon.ShowBalloonTip(
+                3000,
+                "桌面分身",
+                "已最小化到托盘，分身继续在后台运行。双击图标可恢复窗口。",
+                ToolTipIcon.Info);
+        }
+    }
+
+    private void ExitTrayMode()
+    {
+        if (!_inTrayMode || IsDisposed)
+        {
+            return;
+        }
+
+        _inTrayMode = false;
+        Show();
+        WindowState = FormWindowState.Normal;
+        Bounds = _trayRestoreBounds;
+        if (_trayRestoreState == FormWindowState.Maximized)
+        {
+            WindowState = FormWindowState.Maximized;
+        }
+
+        _trayIcon.Visible = false;
+        Activate();
+        BringToFront();
+    }
+
+    private void ExitFromTray()
+    {
+        ExitTrayMode();
+        Close();
     }
 
     private async void OnStartClicked(object? sender, EventArgs e)
@@ -551,6 +702,12 @@ internal sealed class MainForm : Form
 
     private void OnFormClosingHandler(object? sender, FormClosingEventArgs e)
     {
+        if (_inTrayMode)
+        {
+            // 关闭确认框必须挂在可见的窗口上,否则可能看不见也点不到。
+            ExitTrayMode();
+        }
+
         if (_manager is null || e.CloseReason == CloseReason.ApplicationExitCall)
         {
             SaveWindowBounds();
@@ -613,6 +770,10 @@ internal sealed class MainForm : Form
 
     private void OnFormClosedHandler(object? sender, FormClosedEventArgs e)
     {
+        _trayIcon.Visible = false;
+        _trayIcon.Dispose();
+        _trayMenu.Dispose();
+        _trayIconImage.Dispose();
         _manager?.Dispose();
         _settings.Save();
     }

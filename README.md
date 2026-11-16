@@ -33,8 +33,8 @@ dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile
 1. 启动 `DesktopClone.exe`(UAC 点「是」)
 2. 点「**启动分身**」——窗口内会出现分身桌面的登录界面,输入你的 Windows 密码登录(只需一次)
 3. 点「**启动程序…**」选择要挂机的程序,它会以管理员权限启动到分身会话里
-4. 主桌面照常使用;本窗口可以最小化或关闭,分身会话继续在后台运行
-5. 之后想看分身:再开 DesktopClone,点「启动分身」会重新附着同一个会话
+4. 主桌面照常使用;点最小化会把窗口收进系统托盘(避免 RDP 客户端最小化导致分身输入被抑制),分身会话继续在后台运行;双击托盘图标恢复
+5. 之后想看分身:双击托盘图标恢复窗口;若程序已退出,再开 DesktopClone,点「启动分身」会重新附着同一个会话
 6. 用完点「**注销分身**」彻底结束(其中所有程序都会被关闭)
 
 ## 功能说明(工具栏)
@@ -56,7 +56,23 @@ dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile
 
 关闭窗口时若分身会话仍在运行,会询问:**断开画面并保留分身(默认)/ 注销分身 / 取消**。分身里的程序不依赖本窗口存活。
 
+## 最小化行为
+
+点窗口的最小化按钮不会真正最小化,而是把窗口收进系统托盘:内嵌 RDP 客户端保持非最小化状态,分身会话的显示与输入通道不会被 Windows 抑制。双击托盘图标恢复窗口;托盘右键菜单可以「显示主窗口」或「退出」。
+
+> 用 Win+D、显示桌面等系统方式强制最小化时,窗口会先短暂最小化再自动收进托盘。若你的机器上仅隐藏窗口仍会导致 UU 远程/自动化失效,可手动关闭 RDP 的最小化抑制(管理员 cmd,改完重启 DesktopClone):
+>
+> ```bat
+> reg add "HKLM\SOFTWARE\Microsoft\Terminal Server Client" /v RemoteDesktop_SuppressWhenMinimized /t REG_DWORD /d 2 /f
+> reg add "HKLM\SOFTWARE\WOW6432Node\Microsoft\Terminal Server Client" /v RemoteDesktop_SuppressWhenMinimized /t REG_DWORD /d 2 /f
+> reg add "HKCU\Software\Microsoft\Terminal Server Client" /v RemoteDesktop_SuppressWhenMinimized /t REG_DWORD /d 2 /f
+> ```
+>
+> 该设置会让本机 RDP 客户端在最小化时继续维持会话,资源占用会略有增加;不需要时可删除对应的 `RemoteDesktop_SuppressWhenMinimized` 值。
+
 ## 常见问题
+
+- **最小化后 UU 远程/自动化脚本的模拟键鼠失效**:v0.1.2 起最小化会收进托盘而不是真正最小化 RDP 窗口,避免触发 Windows 的 RDP 最小化抑制;恢复窗口后即可继续操作。若仍失效,先确认 UU 被控端 `GameViewerServer.exe` 的会话 ID 与分身会话一致(不一致说明 UU 实际控的是主桌面),再参考上一节末尾的手动兼容设置。
 
 - **分身里打不出中文**:RDP 的键盘输入以扫描码直达子会话,中文必须由**子会话内的输入法**组词,主桌面正在活动的输入法(如豆包)反而会拦截按键或经 RDP 输入法重定向通道(MS-RDPEIME)干扰组词。正确姿势:
   1. 把**主桌面**的输入法切到英文(Shift 切换或 Win+Space);

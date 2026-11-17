@@ -15,6 +15,8 @@ internal sealed class AppSettings
     public bool WatchMode { get; set; }
     public int WindowX { get; set; } = -1;
     public int WindowY { get; set; } = -1;
+
+    // 窗口外框尺寸(含标题栏、工具栏、状态栏);无保存位置时按显示区 1280×720 动态计算。
     public int WindowWidth { get; set; } = 1280;
     public int WindowHeight { get; set; } = 752;
     public bool WindowMaximized { get; set; }

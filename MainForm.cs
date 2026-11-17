@@ -10,6 +10,9 @@ namespace DesktopClone;
 internal sealed class MainForm : Form
 {
     private const int MaxRecentPrograms = 5;
+    private const int DefaultDisplayWidth = 1280;
+    private const int DefaultDisplayHeight = 720;
+    private const int DefaultWindowMargin = 32;
     private const int WmHotkey = 0x0312;
     private const int TopmostHotkeyId = 0x4D01;
     private const int BottomHotkeyId = 0x4D02;
@@ -943,12 +946,18 @@ internal sealed class MainForm : Form
     {
         if (_settings.WindowX == -1 && _settings.WindowY == -1)
         {
-            // 尚未保存过窗口位置:固定从左上角以普通大小启动(不居中、不最大化)。
-            // 此时窗口已创建,再设置 StartPosition 不会生效,所以直接指定位置。
+            // 尚未保存过窗口位置:默认显示区域固定为 1280×720,
+            // 窗口外框还会自动加上标题栏,ClientSize 再加工具栏和状态栏。
+            // 默认离屏幕工作区左上角留 32px,避免完全贴边。
+            var workingArea = Screen.PrimaryScreen?.WorkingArea ?? SystemInformation.WorkingArea;
             StartPosition = FormStartPosition.Manual;
-            Location = Point.Empty;
-            Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
+            Location = new Point(
+                workingArea.Left + DefaultWindowMargin,
+                workingArea.Top + DefaultWindowMargin);
             WindowState = FormWindowState.Normal;
+            ClientSize = new Size(
+                DefaultDisplayWidth,
+                DefaultDisplayHeight + _toolStrip.Height + _statusStrip.Height);
             return;
         }
 

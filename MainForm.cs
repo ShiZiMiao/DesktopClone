@@ -31,6 +31,7 @@ internal sealed class MainForm : Form
     private bool _inTrayMode;
     private bool _handlingMinimize;
     private bool _trayHintShown;
+    private bool _bottomMost;
     private Rectangle _trayRestoreBounds;
     private FormWindowState _trayRestoreState = FormWindowState.Normal;
     private FormWindowState _lastNonMinimizedState = FormWindowState.Normal;
@@ -110,6 +111,12 @@ internal sealed class MainForm : Form
         CheckOnClick = true
     };
 
+    private readonly ToolStripButton _bottomButton = new("窗口置底")
+    {
+        CheckOnClick = true,
+        ToolTipText = "让窗口保持在其他窗口下方,不会被弹到最前(与窗口置顶互斥)"
+    };
+
     private readonly ToolStripButton _sizingButton = new("自适应缩放")
     {
         CheckOnClick = true,
@@ -119,6 +126,11 @@ internal sealed class MainForm : Form
     private readonly ToolStripDropDownButton _resolutionButton = new("分辨率")
     {
         ToolTipText = "分身桌面分辨率,默认跟随本机主显示器的原始分辨率;改动会触发自动重连"
+    };
+
+    private readonly ToolStripButton _aboutButton = new("关于")
+    {
+        ToolTipText = "查看版本、运行环境与项目信息"
     };
 
     public MainForm()
@@ -201,9 +213,11 @@ internal sealed class MainForm : Form
         _winDButton.Click += (_, _) => SafeManagerCall(() => _manager.SendWinD());
         _winTabButton.Click += (_, _) => SafeManagerCall(() => _manager.SendWinTab());
         _topmostButton.CheckedChanged += OnTopmostChanged;
+        _bottomButton.CheckedChanged += OnBottomMostChanged;
         _sizingButton.CheckedChanged += (_, _) => SafeManagerCall(() =>
             _manager.SetSmartSizing(_sizingButton.Checked));
         _resolutionButton.DropDownOpening += (_, _) => RebuildResolutionMenu();
+        _aboutButton.Click += OnAboutClicked;
 
         _toolStrip.Items.AddRange(
         [
@@ -221,9 +235,12 @@ internal sealed class MainForm : Form
             _winTabButton,
             new ToolStripSeparator(),
             _topmostButton,
+            _bottomButton,
             _sizingButton,
             new ToolStripSeparator(),
-            _resolutionButton
+            _resolutionButton,
+            new ToolStripSeparator(),
+            _aboutButton
         ]);
         RebuildRecentMenu();
         RebuildResolutionMenu();
@@ -242,9 +259,11 @@ internal sealed class MainForm : Form
         _watchButton.Checked = _settings.WatchMode;
         _muteButton.Checked = _settings.AudioMuted;
         _shortcutsButton.Checked = _settings.ShortcutsToRemote;
+        _settings.Topmost &= !_settings.BottomMost;
+        _bottomButton.Checked = _settings.BottomMost;
         _topmostButton.Checked = _settings.Topmost;
         _sizingButton.Checked = _settings.SmartSizing;
-        TopMost = _settings.Topmost;
+        TopMost = _topmostButton.Checked;
 
         _manager.RefreshState();
         UpdateUi();
@@ -263,6 +282,12 @@ internal sealed class MainForm : Form
     {
         const int WmSysCommand = 0x0112;
         const int ScMinimize = 0xF020;
+
+        // 置底模式下持续拦截 Z 序变更:点击、显示、激活都不能把窗口拉回最前。
+        if (_bottomMost)
+        {
+            WindowZOrder.ForceBottom(ref m);
+        }
 
         // 不真正最小化宿主窗口:RDP 控件一旦被最小化,Windows 会抑制子会话的输入/显示。
         if (m.Msg == WmSysCommand && ((int)m.WParam & 0xFFF0) == ScMinimize)
@@ -524,9 +549,44 @@ internal sealed class MainForm : Form
 
     private void OnTopmostChanged(object? sender, EventArgs e)
     {
+        if (_topmostButton.Checked && _bottomButton.Checked)
+        {
+            // 置顶与置底互斥:先解除置底,否则窗口仍会被压回最底层。
+            _bottomButton.Checked = false;
+        }
+
         TopMost = _topmostButton.Checked;
         _settings.Topmost = _topmostButton.Checked;
         _settings.Save();
+    }
+
+    private void OnAboutClicked(object? sender, EventArgs e)
+    {
+        using var dialog = new AboutDialog();
+        dialog.ShowDialog(this);
+    }
+
+    private void OnBottomMostChanged(object? sender, EventArgs e)
+    {
+        var enabled = _bottomButton.Checked;
+        if (enabled && _topmostButton.Checked)
+        {
+            // 置顶与置底互斥:先取消置顶,避免 TopMost 把窗口重新拉到最前。
+            _topmostButton.Checked = false;
+        }
+
+        _bottomMost = enabled;
+        _settings.BottomMost = enabled;
+        _settings.Save();
+
+        if (enabled)
+        {
+            WindowZOrder.MoveToBottom(Handle);
+        }
+        else
+        {
+            WindowZOrder.MoveToTop(Handle);
+        }
     }
 
     private void RebuildRecentMenu()

@@ -10,6 +10,10 @@ namespace DesktopClone;
 internal sealed class MainForm : Form
 {
     private const int MaxRecentPrograms = 5;
+    private const int WmHotkey = 0x0312;
+    private const int TopmostHotkeyId = 0x4D01;
+    private const int BottomHotkeyId = 0x4D02;
+    private const int ErrorHotkeyAlreadyRegistered = 1409;
 
     private static readonly Size[] PresetResolutions =
     [
@@ -32,6 +36,9 @@ internal sealed class MainForm : Form
     private bool _handlingMinimize;
     private bool _trayHintShown;
     private bool _bottomMost;
+    private bool _hotkeysInitialized;
+    private bool _formShown;
+    private string? _pendingHotkeyWarning;
     private Rectangle _trayRestoreBounds;
     private FormWindowState _trayRestoreState = FormWindowState.Normal;
     private FormWindowState _lastNonMinimizedState = FormWindowState.Normal;
@@ -133,6 +140,11 @@ internal sealed class MainForm : Form
         ToolTipText = "查看版本、运行环境与项目信息"
     };
 
+    private readonly ToolStripDropDownButton _hotkeyButton = new("快捷键")
+    {
+        ToolTipText = "设置置顶/置底全局快捷键"
+    };
+
     public MainForm()
     {
         _settings = AppSettings.Load();
@@ -193,6 +205,7 @@ internal sealed class MainForm : Form
         Controls.Add(_statusStrip);
 
         Load += OnLoad;
+        Shown += OnShownHandler;
         FormClosing += OnFormClosingHandler;
         FormClosed += OnFormClosedHandler;
     }
@@ -217,6 +230,7 @@ internal sealed class MainForm : Form
         _sizingButton.CheckedChanged += (_, _) => SafeManagerCall(() =>
             _manager.SetSmartSizing(_sizingButton.Checked));
         _resolutionButton.DropDownOpening += (_, _) => RebuildResolutionMenu();
+        _hotkeyButton.DropDownOpening += (_, _) => RebuildHotkeyMenu();
         _aboutButton.Click += OnAboutClicked;
 
         _toolStrip.Items.AddRange(
@@ -240,6 +254,7 @@ internal sealed class MainForm : Form
             new ToolStripSeparator(),
             _resolutionButton,
             new ToolStripSeparator(),
+            _hotkeyButton,
             _aboutButton
         ]);
         RebuildRecentMenu();
@@ -250,6 +265,13 @@ internal sealed class MainForm : Form
     {
         RestoreWindowBounds();
 
+        _settings.Topmost &= !_settings.BottomMost;
+        _bottomButton.Checked = _settings.BottomMost;
+        _topmostButton.Checked = _settings.Topmost;
+        TopMost = _topmostButton.Checked;
+        ApplyHotkeySettings();
+        _hotkeysInitialized = true;
+
         if (_manager is null)
         {
             _statusLabel.Text = $"RDP ActiveX 初始化失败:{_hostCreationError}";
@@ -259,11 +281,7 @@ internal sealed class MainForm : Form
         _watchButton.Checked = _settings.WatchMode;
         _muteButton.Checked = _settings.AudioMuted;
         _shortcutsButton.Checked = _settings.ShortcutsToRemote;
-        _settings.Topmost &= !_settings.BottomMost;
-        _bottomButton.Checked = _settings.BottomMost;
-        _topmostButton.Checked = _settings.Topmost;
         _sizingButton.Checked = _settings.SmartSizing;
-        TopMost = _topmostButton.Checked;
 
         _manager.RefreshState();
         UpdateUi();
@@ -278,10 +296,26 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void OnShownHandler(object? sender, EventArgs e)
+    {
+        _formShown = true;
+        if (_pendingHotkeyWarning is { } warning)
+        {
+            _pendingHotkeyWarning = null;
+            MessageBox.Show(this, warning, "全局快捷键", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     protected override void WndProc(ref Message m)
     {
         const int WmSysCommand = 0x0112;
         const int ScMinimize = 0xF020;
+
+        if (m.Msg == WmHotkey)
+        {
+            HandleHotkey(m.WParam.ToInt32());
+            return;
+        }
 
         // 置底模式下持续拦截 Z 序变更:点击、显示、激活都不能把窗口拉回最前。
         if (_bottomMost)
@@ -297,6 +331,17 @@ internal sealed class MainForm : Form
         }
 
         base.WndProc(ref m);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+
+        // 窗口句柄重建后系统会丢弃已注册的热键,需要重新注册。
+        if (_hotkeysInitialized)
+        {
+            ApplyHotkeySettings();
+        }
     }
 
     protected override void OnResize(EventArgs e)
@@ -589,6 +634,181 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void HandleHotkey(int hotkeyId)
+    {
+        if (!_settings.GlobalHotkeysEnabled)
+        {
+            return;
+        }
+
+        switch (hotkeyId)
+        {
+            case TopmostHotkeyId:
+                _topmostButton.Checked = !_topmostButton.Checked;
+                break;
+            case BottomHotkeyId:
+                _bottomButton.Checked = !_bottomButton.Checked;
+                break;
+        }
+    }
+
+    private void RebuildHotkeyMenu()
+    {
+        _hotkeyButton.DropDownItems.Clear();
+
+        var enabledItem = new ToolStripMenuItem("启用全局快捷键")
+        {
+            Checked = _settings.GlobalHotkeysEnabled
+        };
+        enabledItem.Click += OnToggleGlobalHotkeys;
+        _hotkeyButton.DropDownItems.Add(enabledItem);
+        _hotkeyButton.DropDownItems.Add(new ToolStripSeparator());
+
+        _hotkeyButton.DropDownItems.Add(new ToolStripMenuItem("快捷键方案")
+        {
+            Enabled = false
+        });
+
+        var firstSchemeItem = new ToolStripMenuItem("Ctrl+Alt+T(置顶) / Ctrl+Alt+B(置底)")
+        {
+            Checked = !_settings.HotkeyUseShift
+        };
+        firstSchemeItem.Click += (_, _) => ApplyHotkeyScheme(useShift: false);
+        _hotkeyButton.DropDownItems.Add(firstSchemeItem);
+
+        var secondSchemeItem = new ToolStripMenuItem("Ctrl+Shift+Alt+T(置顶) / Ctrl+Shift+Alt+B(置底)")
+        {
+            Checked = _settings.HotkeyUseShift
+        };
+        secondSchemeItem.Click += (_, _) => ApplyHotkeyScheme(useShift: true);
+        _hotkeyButton.DropDownItems.Add(secondSchemeItem);
+
+        _hotkeyButton.DropDownItems.Add(new ToolStripSeparator());
+        var retryItem = new ToolStripMenuItem("重新注册快捷键")
+        {
+            Enabled = _settings.GlobalHotkeysEnabled
+        };
+        retryItem.Click += (_, _) => ApplyHotkeySettings();
+        _hotkeyButton.DropDownItems.Add(retryItem);
+    }
+
+    private void OnToggleGlobalHotkeys(object? sender, EventArgs e)
+    {
+        _settings.GlobalHotkeysEnabled = !_settings.GlobalHotkeysEnabled;
+        _settings.Save();
+        ApplyHotkeySettings();
+    }
+
+    private void ApplyHotkeyScheme(bool useShift)
+    {
+        if (_settings.HotkeyUseShift == useShift)
+        {
+            return;
+        }
+
+        _settings.HotkeyUseShift = useShift;
+        _settings.Save();
+        ApplyHotkeySettings();
+    }
+
+    /// <summary>按当前设置注册全局热键;重复调用会先注销旧注册。</summary>
+    private void ApplyHotkeySettings()
+    {
+        UnregisterHotkeys();
+        UpdateHotkeyToolTips();
+
+        if (!_settings.GlobalHotkeysEnabled)
+        {
+            _pendingHotkeyWarning = null;
+            return;
+        }
+
+        var scheme = GetHotkeyScheme(_settings.HotkeyUseShift);
+        if (!GlobalHotkey.TryRegister(
+                Handle,
+                TopmostHotkeyId,
+                scheme.Modifiers,
+                scheme.TopmostVirtualKey,
+                out var errorCode))
+        {
+            ReportHotkeyFailure("置顶", scheme.TopmostText, errorCode);
+            return;
+        }
+
+        if (!GlobalHotkey.TryRegister(
+                Handle,
+                BottomHotkeyId,
+                scheme.Modifiers,
+                scheme.BottommostVirtualKey,
+                out errorCode))
+        {
+            GlobalHotkey.Unregister(Handle, TopmostHotkeyId);
+            ReportHotkeyFailure("置底", scheme.BottommostText, errorCode);
+            return;
+        }
+
+        _pendingHotkeyWarning = null;
+    }
+
+    private void UnregisterHotkeys()
+    {
+        if (!IsHandleCreated)
+        {
+            return;
+        }
+
+        GlobalHotkey.Unregister(Handle, TopmostHotkeyId);
+        GlobalHotkey.Unregister(Handle, BottomHotkeyId);
+    }
+
+    private void UpdateHotkeyToolTips()
+    {
+        var scheme = GetHotkeyScheme(_settings.HotkeyUseShift);
+        _topmostButton.ToolTipText = _settings.GlobalHotkeysEnabled
+            ? $"窗口置顶(全局快捷键 {scheme.TopmostText})"
+            : "窗口置顶";
+        _bottomButton.ToolTipText = _settings.GlobalHotkeysEnabled
+            ? $"让窗口保持在其他窗口下方,不会被弹到最前(与窗口置顶互斥;全局快捷键 {scheme.BottommostText})"
+            : "让窗口保持在其他窗口下方,不会被弹到最前(与窗口置顶互斥)";
+    }
+
+    private void ReportHotkeyFailure(string action, string hotkeyText, int errorCode)
+    {
+        var reason = errorCode == ErrorHotkeyAlreadyRegistered
+            ? "该组合键已被其他程序占用"
+            : $"系统返回错误码 {errorCode}";
+        var message = $"全局快捷键 {hotkeyText}({action})注册失败:{reason}。\n\n"
+                      + "可在工具栏「快捷键」菜单中改用 Ctrl+Shift+Alt+T/B,或关闭全局快捷键。";
+        if (_formShown)
+        {
+            MessageBox.Show(this, message, "全局快捷键", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        else
+        {
+            _pendingHotkeyWarning ??= message;
+        }
+    }
+
+    private static HotkeyScheme GetHotkeyScheme(bool useShift)
+    {
+        const uint virtualKeyT = 0x54;
+        const uint virtualKeyB = 0x42;
+
+        return useShift
+            ? new HotkeyScheme(
+                GlobalHotkey.ModControl | GlobalHotkey.ModAlt | GlobalHotkey.ModShift,
+                virtualKeyT,
+                virtualKeyB,
+                "Ctrl+Shift+Alt+T",
+                "Ctrl+Shift+Alt+B")
+            : new HotkeyScheme(
+                GlobalHotkey.ModControl | GlobalHotkey.ModAlt,
+                virtualKeyT,
+                virtualKeyB,
+                "Ctrl+Alt+T",
+                "Ctrl+Alt+B");
+    }
+
     private void RebuildRecentMenu()
     {
         _recentButton.DropDownItems.Clear();
@@ -830,6 +1050,7 @@ internal sealed class MainForm : Form
 
     private void OnFormClosedHandler(object? sender, FormClosedEventArgs e)
     {
+        UnregisterHotkeys();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         _trayMenu.Dispose();
@@ -837,4 +1058,11 @@ internal sealed class MainForm : Form
         _manager?.Dispose();
         _settings.Save();
     }
+
+    private readonly record struct HotkeyScheme(
+        uint Modifiers,
+        uint TopmostVirtualKey,
+        uint BottommostVirtualKey,
+        string TopmostText,
+        string BottommostText);
 }

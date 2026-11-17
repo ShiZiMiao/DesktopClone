@@ -8,6 +8,8 @@ internal sealed class AppSettings
     public bool SmartSizing { get; set; } = true;
     public bool Topmost { get; set; }
     public bool BottomMost { get; set; }
+    public bool GlobalHotkeysEnabled { get; set; } = true;
+    public bool HotkeyUseShift { get; set; }
     public bool AudioMuted { get; set; }
     public bool ShortcutsToRemote { get; set; } = true;
     public bool WatchMode { get; set; }

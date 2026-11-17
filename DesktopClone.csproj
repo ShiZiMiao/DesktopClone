@@ -12,7 +12,7 @@
     <AssemblyTitle>桌面分身 DesktopClone</AssemblyTitle>
     <Product>DesktopClone</Product>
     <Description>基于 Windows 子会话与本机 RDP 的独立桌面分身工具</Description>
-    <Version>0.1.4</Version>
+    <Version>0.1.5</Version>
     <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
     <DebugType>embedded</DebugType>
   </PropertyGroup>

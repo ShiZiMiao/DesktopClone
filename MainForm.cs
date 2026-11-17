@@ -607,7 +607,9 @@ internal sealed class MainForm : Form
 
     private void OnAboutClicked(object? sender, EventArgs e)
     {
-        using var dialog = new AboutDialog();
+        // 置顶窗口的 owned dialog 必须同样置顶,否则会被主窗口盖住而无法操作。
+        var topMost = TopMost;
+        using var dialog = new AboutDialog { TopMost = topMost };
         dialog.ShowDialog(this);
     }
 
@@ -890,7 +892,8 @@ internal sealed class MainForm : Form
             ? new Size(_settings.DesktopWidth, _settings.DesktopHeight)
             : ChildSessionManager.OriginalDesktopSize;
 
-        using var dialog = new ResolutionDialog(initialSize);
+        var topMost = TopMost;
+        using var dialog = new ResolutionDialog(initialSize) { TopMost = topMost };
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             ApplyResolution(dialog.SelectedSize);
@@ -940,7 +943,12 @@ internal sealed class MainForm : Form
     {
         if (_settings.WindowX == -1 && _settings.WindowY == -1)
         {
-            StartPosition = FormStartPosition.CenterScreen;
+            // 尚未保存过窗口位置:固定从左上角以普通大小启动(不居中、不最大化)。
+            // 此时窗口已创建,再设置 StartPosition 不会生效,所以直接指定位置。
+            StartPosition = FormStartPosition.Manual;
+            Location = Point.Empty;
+            Size = new Size(_settings.WindowWidth, _settings.WindowHeight);
+            WindowState = FormWindowState.Normal;
             return;
         }
 
